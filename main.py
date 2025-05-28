@@ -1,3 +1,4 @@
+import argparse
 import time
 import wave
 import queue
@@ -14,10 +15,6 @@ from langchain.callbacks.base import BaseCallbackHandler, BaseCallbackManager
 
 LANG = "EN" # CN for Chinese, EN for English
 DEBUG = True
-
-# Model Configuration
-WHISP_PATH = "models/whisper-large-v3"
-MODEL_PATH = "models/yi-34b-chat.Q8_0.gguf" # Or models/yi-chat-6b.Q8_0.gguf
 
 # Recording Configuration
 CHUNK = 1024
@@ -117,6 +114,21 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Voice Assistant with configurable models.")
+    parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="models/whisper-large-v3",
+        help="Path to the Whisper model."
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="models/yi-34b-chat.Q8_0.gguf", # Or models/yi-chat-6b.Q8_0.gguf
+        help="Path to the LLM model."
+    )
+    args = parser.parse_args()
+
     if LANG == "CN":
         prompt_path = "prompts/example-cn.txt"
     else:
@@ -132,7 +144,7 @@ if __name__ == '__main__':
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
 
     llm = LlamaCpp(
-        model_path=MODEL_PATH,
+        model_path=args.llm_model,
         n_gpu_layers=1, # Metal set to 1 is enough.
         n_batch=512,    # Should be between 1 and n_ctx, consider the amount of RAM of your Apple Silicon Chip.
         n_ctx=4096,     # Update the context window size to 4096
@@ -151,7 +163,7 @@ if __name__ == '__main__':
                 record_audio()
                 print("Transcribing...")
                 time_ckpt = time.time()
-                user_input = whisper.transcribe("recordings/output.wav", path_or_hf_repo=WHISP_PATH)["text"]
+                user_input = whisper.transcribe("recordings/output.wav", path_or_hf_repo=args.whisper_model)["text"]
                 print("%s: %s (Time %d ms)" % ("Guest", user_input, (time.time() - time_ckpt) * 1000))
             
             except subprocess.CalledProcessError:
