@@ -70,15 +70,38 @@ def record_audio(num_channels, device_idx):
         wf.writeframes(b''.join(frames))
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
-    def __init__(self, initial_tts_props=None):
+    def __init__(self, pyttsx3_engine_instance=None):
         self.generated_text = ""
-        self.lock = threading.Lock()
+        self.lock = threading.Lock() # For generated_text and speech_queue
         self.speech_queue = queue.Queue()
         self.worker_thread = threading.Thread(target=self.process_queue)
         self.worker_thread.daemon = True
-        self.worker_thread.start()
+        
+        self.tts_engine = pyttsx3_engine_instance
+        self.tts_loop_started = False
+        self.tts_utterance_finished_event = threading.Event()
+        self.current_utterance_name = "u_tts" # Static name for utterances
+
+        if self.tts_engine:
+            try:
+                self.tts_engine.connect('finished-utterance', self._on_tts_finish)
+                self.tts_engine.startLoop(False) # Prepare for external event iteration
+                self.tts_loop_started = True
+                print("pyttsx3 event loop started (external management) and 'finished-utterance' callback connected.")
+            except Exception as e:
+                print(f"Error starting pyttsx3 external loop or connecting callback: {e}. TTS will be non-functional.")
+                self.tts_engine = None # Cannot use if loop or callback setup failed
+        
+        self.worker_thread.start() # Start worker thread after engine is potentially set up
         self.tts_busy = False
-        self.initial_tts_props = initial_tts_props
+
+    def _on_tts_finish(self, name, completed):
+        # print(f"TTS event: name='{name}', completed={completed}, expected='{self.current_utterance_name}'") # Debugging
+        if name == self.current_utterance_name:
+            self.tts_utterance_finished_event.set()
+        # else:
+            # This might indicate an issue if events from other sources or old utterances arrive
+            # print(f"TTS event for unexpected utterance name: {name}. Current expected: {self.current_utterance_name}")
 
     def on_llm_new_token(self, token, **kwargs):
         # Append the token to the generated text
@@ -100,34 +123,31 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
                 self.tts_busy = False
                 continue
             self.tts_busy = True
-            self.text_to_speech(text)
+            self.text_to_speech(text) # This will now block via the iterate loop in text_to_speech
             self.speech_queue.task_done()
             if self.speech_queue.empty():
                 self.tts_busy = False
 
     def text_to_speech(self, text):
-        local_tts_engine = None
-        try:
-            # Initialize a new engine instance for each call
-            local_tts_engine = pyttsx3.init()
-            if self.initial_tts_props:
-                if self.initial_tts_props.get('voice'):
-                    local_tts_engine.setProperty('voice', self.initial_tts_props['voice'])
-                if self.initial_tts_props.get('rate'):
-                    local_tts_engine.setProperty('rate', self.initial_tts_props['rate'])
-            
-            print(f"Synthesizing with pyttsx3: {text}")
-            local_tts_engine.say(text)
-            local_tts_engine.runAndWait()
-            print("pyttsx3 playback complete.")
-            # No explicit stop needed for local_tts_engine, it will be garbage collected.
-            # However, some pyttsx3 drivers might have issues with rapid re-initialization.
-            # If issues persist, a single engine in process_queue with stop/start iterations might be needed.
-        except RuntimeError as r_err:
-            # Catching RuntimeError specifically for "run loop already started"
-            print(f"pyttsx3 runtime error in text_to_speech: {r_err}. This might indicate an issue with the TTS engine driver even with local instances.")
-        except Exception as e:
-            print(f"General error during pyttsx3 synthesis or playback in text_to_speech: {e}")
+        if self.tts_engine and self.tts_loop_started:
+            try:
+                self.tts_utterance_finished_event.clear()
+                print(f"Queuing with pyttsx3 (event callback): {text}")
+                self.tts_engine.say(text, self.current_utterance_name)
+                
+                # print(f"Starting pyttsx3 iteration for '{self.current_utterance_name}'...") # Debugging
+                while not self.tts_utterance_finished_event.is_set():
+                    self.tts_engine.iterate()
+                    time.sleep(0.01) # Prevent tight loop, yield CPU
+                # print(f"pyttsx3 utterance '{self.current_utterance_name}' finished processing (event received).") # Debugging
+            except Exception as e:
+                print(f"Error during pyttsx3 synthesis or iteration (event callback): {e}")
+                # Ensure event is set in case of error to prevent deadlocks
+                self.tts_utterance_finished_event.set() 
+        elif not self.tts_engine:
+            print("pyttsx3 engine not initialized in handler. Cannot speak.")
+        elif not self.tts_loop_started:
+            print("pyttsx3 external loop not started in handler. Cannot speak.")
 
 
 if __name__ == '__main__':
@@ -173,8 +193,6 @@ if __name__ == '__main__':
     
     # Initialize pyttsx3 Engine
     tts_engine = None
-    initial_tts_props = {} # Default to empty dict
-
     try:
         tts_engine = pyttsx3.init()
 
@@ -190,7 +208,7 @@ if __name__ == '__main__':
                     print(f"  Gender: {voice.gender}")
                     print(f"  Age/Rate property (voice.age): {voice.age}") 
                     print("-" * 20)
-                # Safe to exit, no resources needing explicit cleanup beyond OS handling for pyttsx3
+                # No need to call tts_engine.stop() or similar before exit for list voices
                 exit() 
             
             selected_voice_id = None
@@ -209,17 +227,9 @@ if __name__ == '__main__':
         tts_engine.setProperty('rate', args.tts_rate)
         print(f"TTS rate set to: {args.tts_rate}")
 
-        # Store properties for the callback handler
-        initial_tts_props['voice'] = tts_engine.getProperty('voice')
-        initial_tts_props['rate'] = tts_engine.getProperty('rate')
-
     except Exception as e:
-        print(f"Error initializing pyttsx3 or getting properties: {e}. TTS might not work or use system defaults.")
-        # tts_engine might be None or partially configured.
-        # initial_tts_props will use defaults or be empty if error before props could be read.
-        # If tts_engine is None here, initial_tts_props remains empty, callback will use pyttsx3 defaults.
-        if args.tts_rate and not initial_tts_props.get('rate'): # Ensure rate from args is respected if engine init failed late
-            initial_tts_props['rate'] = args.tts_rate
+        print(f"Error initializing pyttsx3: {e}. TTS might not be functional.")
+        tts_engine = None # Ensure tts_engine is None if setup failed
 
 
     if LANG == "CN":
@@ -231,7 +241,8 @@ if __name__ == '__main__':
     prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
 
     # Create an instance of the VoiceOutputCallbackHandler
-    voice_output_handler = VoiceOutputCallbackHandler(initial_tts_props=initial_tts_props)
+    # Pass the initialized and configured tts_engine
+    voice_output_handler = VoiceOutputCallbackHandler(pyttsx3_engine_instance=tts_engine)
 
     # Create a callback manager with the voice output handler
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
@@ -274,6 +285,14 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nExiting due to KeyboardInterrupt...")
     finally:
+        if 'voice_output_handler' in locals() and hasattr(voice_output_handler, 'tts_engine') and \
+           voice_output_handler.tts_engine is not None and \
+           hasattr(voice_output_handler, 'tts_loop_started') and voice_output_handler.tts_loop_started:
+            try:
+                print("Stopping pyttsx3 event loop.")
+                voice_output_handler.tts_engine.endLoop()
+            except Exception as e:
+                print(f"Error stopping pyttsx3 event loop: {e}")
+        
         # PyAudio for input is managed within record_audio()
-        # No global PyAudio output instance for pyttsx3 to terminate here
         print("Script finished.")
