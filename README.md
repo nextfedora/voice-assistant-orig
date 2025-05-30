@@ -54,11 +54,10 @@ The model files are stored in the `models/` folder. The paths to the models can 
   - The [version for MLX](https://huggingface.co/mlx-community/whisper-large-v3-mlx) from `mlx-community` can be directly downloaded.
   - For a smaller footprint, you can use models like [mlx-community/whisper-tiny-mlx](https://huggingface.co/mlx-community/whisper-tiny-mlx).
 
-- **TTS Model (Piper TTS)**: The script now uses [Piper TTS](https://github.com/rhasspy/piper) for text-to-speech output, falling back to the OS 'say' command if Piper fails or is not configured. Piper voices are generally higher quality and more consistent.
-  - `--tts-model`: Specifies the Piper TTS voice. This can be a model name (e.g., `en_US-lessac-medium`) which will be auto-downloaded if not found in `tts-data-dir`, or a direct path to an `.onnx` voice file. A good list of available voices can be found on the [Rhasspy Piper Voices Hugging Face page](https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0). The `en_US-lessac-medium` voice is a good starting point for English.
-  - `--tts-config`: Optional path to the `.onnx.json` config file for the Piper voice. This is often inferred if `--tts-model` is a path to an `.onnx` file (by looking for a `.json` file with the same name) or if using an auto-downloaded model name.
-  - `--tts-data-dir`: Directory where Piper TTS voice models are stored or will be downloaded (default: `./piper_models`).
-  - *Note on Voice Quality*: Different Piper voices have varying characteristics, file sizes, and processing requirements. Experiment to find one that best suits your needs for quality and performance.
+- **Text-to-Speech (TTS) Voice (pyttsx3)**: The script uses `pyttsx3` for text-to-speech output. `pyttsx3` is a cross-platform library that interfaces with available system TTS engines (e.g., NSSpeechSynthesizer on macOS, SAPI5 on Windows, eSpeak on Linux).
+  - `--tts-voice-name`: Specifies the name of the voice to be used by `pyttsx3`. The available voices depend on the operating system and installed voice packages (e.g., 'Alex', 'Samantha' on macOS). If the name is not found or not specified, the system's default voice will be used. Provide `'list'` as the value to print all available voice names and their details, then exit (e.g., `python main.py --tts-voice-name list`).
+  - `--tts-rate`: Sets the speech rate for TTS in words per minute (default: 180).
+  - *Improving Voice Quality*: On macOS, you can install additional voices in System Settings > Accessibility > Spoken Content > System Voice > Manage Voices. These voices should then become available for use with the `--tts-voice-name` argument. Similar options may be available on other operating systems.
 
 ### Running with Specific Models
 
@@ -96,18 +95,18 @@ You can specify which models to use when running the script from the command lin
   ```
   If you encounter an `OSError: [Errno -9998] Invalid number of channels`, see the Troubleshooting section.
 
-- **Using a specific Piper TTS voice (auto-download):**
-  To use a specific Piper TTS voice (e.g., `en_US-lessac-medium`), it will be downloaded to `--tts-data-dir` if not already present.
+- **Listing available TTS voices:**
+  To see which voices are available on your system for `pyttsx3` to use:
   ```bash
-  python main.py --tts-model en_US-lessac-medium
+  python main.py --tts-voice-name list
   ```
 
-- **Using local Piper TTS model files:**
-  If you have downloaded Piper model files (`.onnx` and `.onnx.json`) manually:
+- **Using a specific TTS voice and rate:**
+  Once you know a voice name (e.g., "Alex", "Samantha" on macOS, or others depending on your system), you can use it:
   ```bash
-  python main.py --tts-model /path/to/your/voice.onnx --tts-config /path/to/your/voice.onnx.json
+  python main.py --tts-voice-name Alex --tts-rate 200
   ```
-  You can also place them in the default `--tts-data-dir` (e.g. `./piper_models/en_US-lessac-medium/en_US-lessac-medium.onnx`) and then use the model name.
+  If the specified voice name is not found, the script will use the default system voice.
 
 #### Original Model Files Acknowledgement
 

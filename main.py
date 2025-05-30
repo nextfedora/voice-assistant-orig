@@ -5,14 +5,10 @@ import queue
 import struct
 import threading
 import subprocess
-import io
 
 import pyaudio
 import whisper
-import soundfile as sf
-# Attempt to import PiperVoice, hoping the actual library uses this name or similar
-# If this fails at runtime, the user will need to install piper_tts and check its API
-from piper_tts.piper_voice import PiperVoice 
+import pyttsx3
 
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import LlamaCpp
@@ -74,7 +70,7 @@ def record_audio(num_channels):
         wf.writeframes(b''.join(frames))
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
-    def __init__(self, piper_voice_instance=None, pyaudio_instance=None):
+    def __init__(self, pyttsx3_engine_instance=None): # Changed signature
         self.generated_text = ""
         self.lock = threading.Lock()
         self.speech_queue = queue.Queue()
@@ -82,8 +78,9 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         self.worker_thread.daemon = True
         self.worker_thread.start()
         self.tts_busy = False
-        self.piper_voice = piper_voice_instance
-        self.p_audio = pyaudio_instance
+        self.tts_engine = pyttsx3_engine_instance # Changed variable
+        # self.p_audio = None # Explicitly removing this line if it exists after previous changes
+        # self.piper_voice = None # Explicitly removing this line
 
     def on_llm_new_token(self, token, **kwargs):
         # Append the token to the generated text
@@ -111,47 +108,16 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
                 self.tts_busy = False
 
     def text_to_speech(self, text):
-        if self.piper_voice and self.p_audio:
+        if self.tts_engine:
             try:
-                print(f"Synthesizing with Piper: {text}")
-                # Assumed API for Piper TTS synthesis. The actual method might differ.
-                # It's expected to return WAV audio bytes.
-                wav_bytes = self.piper_voice.synthesize(text) 
-
-                if wav_bytes:
-                    # Use soundfile to get properties from WAV bytes for PyAudio
-                    data, samplerate = sf.read(io.BytesIO(wav_bytes))
-                    
-                    # Open PyAudio stream for playback
-                    # Piper models are typically mono, soundfile usually returns float32
-                    stream = self.p_audio.open(format=pyaudio.paFloat32, 
-                                               channels=1, 
-                                               rate=samplerate,
-                                               output=True)
-                    # Play audio
-                    stream.write(data.astype('float32').tobytes()) # Ensure data is in bytes
-                    stream.stop_stream()
-                    stream.close()
-                    print("Piper TTS playback complete.")
-                else:
-                    print("Piper TTS synthesis returned no data. Falling back.")
-                    self.fallback_tts(text) # Fallback if Piper returns no data
+                print(f"Synthesizing with pyttsx3: {text}")
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+                print("pyttsx3 playback complete.")
             except Exception as e:
-                print(f"Error during Piper TTS synthesis or playback: {e}. Falling back.")
-                self.fallback_tts(text) # Fallback on any Piper error
+                print(f"Error during pyttsx3 synthesis or playback: {e}")
         else:
-            # Fallback if Piper or PyAudio not initialized
-            self.fallback_tts(text)
-
-    def fallback_tts(self, text):
-        print(f"Falling back to OS 'say' command for: {text}")
-        try:
-            if LANG == "CN":
-                subprocess.call(["say", "-r", "200", "-v", "TingTing", text])
-            else:
-                subprocess.call(["say", "-r", "180", "-v", "Karen", text])
-        except Exception as e:
-            print(f"Error in fallback text-to-speech: {e}")
+            print("pyttsx3 engine not initialized. Cannot speak.")
 
 
 if __name__ == '__main__':
@@ -174,42 +140,60 @@ if __name__ == '__main__':
         default=1,
         help="Number of audio channels for recording."
     )
+    # Removed Piper TTS arguments: --tts-model, --tts-config, --tts-data-dir
     parser.add_argument(
-        "--tts-model",
+        "--tts-voice-name",
         type=str,
-        default="en_US-lessac-medium",
-        help="Piper TTS voice model name (e.g., en_US-lessac-medium) or path to .onnx file. If a name, it will try to download. See Piper docs for voice names."
+        default=None, # Uses pyttsx3 default voice if not specified
+        help="Name of the pyttsx3 voice to use (e.g., 'Alex', 'Samantha' on macOS). Use 'list' to see available voices."
     )
     parser.add_argument(
-        "--tts-config",
-        type=str,
-        default=None,
-        help="Path to Piper TTS .onnx.json config file. If --tts-model is a name, this can often be inferred."
-    )
-    parser.add_argument(
-        "--tts-data-dir",
-        type=str,
-        default="./piper_models",
-        help="Directory to find/download Piper voice models."
+        "--tts-rate",
+        type=int,
+        default=180, # Default rate
+        help="Speech rate for TTS (words per minute)."
     )
     args = parser.parse_args()
-
-    # Initialize Piper TTS Voice
-    piper_voice = None
+    
+    # Initialize pyttsx3 Engine
+    tts_engine = None
     try:
-        print(f"Initializing Piper TTS with model: {args.tts_model}, config: {args.tts_config}, data directory: {args.tts_data_dir}")
-        # This instantiation assumes piper-tts can handle a model name for download,
-        # or direct paths if tts_model is a path to .onnx and tts_config is its .json.
-        # The actual API might require specific handling for names vs paths.
-        piper_voice = PiperVoice(model_name_or_path=args.tts_model, config_path=args.tts_config, data_folder=args.tts_data_dir)
-        print("Piper TTS initialized successfully.")
-    except Exception as e:
-        print(f"Error initializing Piper TTS: {e}. Ensure 'piper-tts' is installed and models are accessible.")
-        print("TTS will fall back to OS 'say' command if available, or fail if 'say' is not available.")
-        piper_voice = None # Ensure it's None if init fails
+        tts_engine = pyttsx3.init()
 
-    # Initialize PyAudio instance for playback
-    p_audio_out = pyaudio.PyAudio()
+        if args.tts_voice_name:
+            if args.tts_voice_name.lower() == 'list':
+                voices = tts_engine.getProperty('voices')
+                print("Available TTS voices:")
+                for i, voice in enumerate(voices):
+                    print(f"Voice {i}:")
+                    print(f"  ID: {voice.id}")
+                    print(f"  Name: {voice.name}")
+                    print(f"  Lang: {voice.languages}")
+                    print(f"  Gender: {voice.gender}")
+                    # voice.age might not be standard, using it as per prompt, but might be specific to some engines or a placeholder.
+                    print(f"  Age/Rate property (voice.age): {voice.age}") 
+                    print("-" * 20)
+                exit()  # Exit after listing voices
+            
+            selected_voice_id = None
+            voices = tts_engine.getProperty('voices')
+            for voice in voices:
+                if voice.name and args.tts_voice_name.lower() == voice.name.lower():
+                    selected_voice_id = voice.id
+                    break
+            if selected_voice_id:
+                tts_engine.setProperty('voice', selected_voice_id)
+                print(f"TTS voice set to: {args.tts_voice_name}")
+            else:
+                print(f"TTS voice name '{args.tts_voice_name}' not found. Using default system voice.")
+        
+        if args.tts_rate:
+            tts_engine.setProperty('rate', args.tts_rate)
+            print(f"TTS rate set to: {args.tts_rate}")
+
+    except Exception as e:
+        print(f"Error initializing pyttsx3: {e}. TTS might not work.")
+        tts_engine = None
 
     if LANG == "CN":
         prompt_path = "prompts/example-cn.txt"
@@ -220,7 +204,7 @@ if __name__ == '__main__':
     prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
 
     # Create an instance of the VoiceOutputCallbackHandler
-    voice_output_handler = VoiceOutputCallbackHandler(piper_voice_instance=piper_voice, pyaudio_instance=p_audio_out)
+    voice_output_handler = VoiceOutputCallbackHandler(pyttsx3_engine_instance=tts_engine)
 
     # Create a callback manager with the voice output handler
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
@@ -263,8 +247,6 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nExiting due to KeyboardInterrupt...")
     finally:
-        if 'p_audio_out' in locals() and p_audio_out is not None:
-            print("Terminating PyAudio for output.")
-            p_audio_out.terminate()
-        # Terminate the input PyAudio instance used in record_audio if it were managed globally
-        # However, record_audio() creates and terminates its own PyAudio instance locally, so no global one to clean up here for input.
+        # PyAudio for input is managed within record_audio()
+        # No global PyAudio output instance for pyttsx3 to terminate here
+        print("Script finished.")

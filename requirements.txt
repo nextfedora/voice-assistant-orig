@@ -10,5 +10,4 @@ torch
 tqdm
 more-itertools
 tiktoken==0.3.3
-piper-tts
-soundfile
+pyttsx3
