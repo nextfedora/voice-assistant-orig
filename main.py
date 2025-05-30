@@ -19,7 +19,7 @@ DEBUG = True
 # Recording Configuration
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
-CHANNELS = 1
+# CHANNELS = 1 # Will be replaced by args.channels
 RATE = 44100
 SILENCE_THRESHOLD = 500
 SILENT_CHUNKS = 2 * RATE / CHUNK  # two seconds of silence marks the end of user voice input
@@ -35,9 +35,9 @@ def compute_rms(data):
     rms = (sum_squares / len(ints)) ** 0.5
     return rms
 
-def record_audio():
+def record_audio(num_channels):
     audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, input_device_index=MIC_IDX, frames_per_buffer=CHUNK)
+    stream = audio.open(format=FORMAT, channels=num_channels, rate=RATE, input=True, input_device_index=MIC_IDX, frames_per_buffer=CHUNK)
 
     silent_chunks = 0
     audio_started = False
@@ -63,7 +63,7 @@ def record_audio():
 
     # save audio to a WAV file
     with wave.open('recordings/output.wav', 'wb') as wf:
-        wf.setnchannels(CHANNELS)
+        wf.setnchannels(num_channels)
         wf.setsampwidth(audio.get_sample_size(FORMAT))
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
@@ -127,6 +127,12 @@ if __name__ == '__main__':
         default="models/yi-34b-chat.Q8_0.gguf", # Or models/yi-chat-6b.Q8_0.gguf
         help="Path to the LLM model."
     )
+    parser.add_argument(
+        "--channels",
+        type=int,
+        default=1,
+        help="Number of audio channels for recording."
+    )
     args = parser.parse_args()
 
     if LANG == "CN":
@@ -160,7 +166,7 @@ if __name__ == '__main__':
                 continue  # Skip to the next iteration if TTS is busy 
             try:
                 print("Listening...")
-                record_audio()
+                record_audio(args.channels)
                 print("Transcribing...")
                 time_ckpt = time.time()
                 user_input = whisper.transcribe("recordings/output.wav", path_or_hf_repo=args.whisper_model)["text"]
