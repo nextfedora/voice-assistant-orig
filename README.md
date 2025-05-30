@@ -59,6 +59,10 @@ The model files are stored in the `models/` folder. The paths to the models can 
   - `--tts-rate`: Sets the speech rate for TTS in words per minute (default: 180).
   - *Improving Voice Quality*: On macOS, you can install additional voices in System Settings > Accessibility > Spoken Content > System Voice > Manage Voices. These voices should then become available for use with the `--tts-voice-name` argument. Similar options may be available on other operating systems.
 
+- **Audio Input Configuration**:
+  - `--channels`: Integer number of audio channels for recording (default: `1`). Common values are 1 (mono) or 2 (stereo).
+  - `--mic-device-index`: Integer device index of the microphone to use for recording (default: `0`). Use the `tools/list_microphones.py` script to find the correct index for your microphone.
+
 ### Running with Specific Models
 
 You can specify which models to use when running the script from the command line.
@@ -88,12 +92,12 @@ You can specify which models to use when running the script from the command lin
   python main.py --llm-model models/yi-chat-6b.Q8_0.gguf --whisper-model models/whisper-tiny-mlx
   ```
 
-- **Configuring Audio Channels:**
-  You can specify the number of audio channels for recording using the `--channels` argument. The default is 1 (mono).
+- **Configuring Audio Input (Microphone and Channels):**
+  If the default microphone (index 0) or channel count (1) is not suitable, you can specify them. For example, to use microphone index 2 with 1 channel:
   ```bash
-  python main.py --channels 2
+  python main.py --mic-device-index 2 --channels 1
   ```
-  If you encounter an `OSError: [Errno -9998] Invalid number of channels`, see the Troubleshooting section.
+  If you encounter an `OSError: [Errno -9998] Invalid number of channels` with your chosen microphone, see the Troubleshooting section.
 
 - **Listing available TTS voices:**
   To see which voices are available on your system for `pyttsx3` to use:
@@ -129,9 +133,9 @@ This error indicates that the number of audio channels specified (or defaulted t
     ```
 2.  **Identify your microphone:**
     Look for your intended microphone in the output. Note its `index` and `maxInputChannels`.
-3.  **Run `main.py` with the correct channel count:**
-    Use the `maxInputChannels` value for your microphone with the `--channels` argument. For example, if your microphone's `maxInputChannels` is 2, and its index is 0 (which is the default `MIC_IDX`), you would run:
+3.  **Run `main.py` with the correct microphone index and channel count:**
+    Use the `index` value from the tool as the argument for `--mic-device-index`, and the `maxInputChannels` value for the `--channels` argument. For example, if your microphone's index is `2` and its `maxInputChannels` is `1`:
     ```bash
-    python main.py --channels 2
+    python main.py --mic-device-index 2 --channels 1
     ```
-    If your microphone's index is different, you'll need to update `MIC_IDX` in `main.py` accordingly. Common channel values are 1 (mono) or 2 (stereo).
+    Common channel values are 1 (mono) or 2 (stereo).

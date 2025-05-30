@@ -24,7 +24,7 @@ FORMAT = pyaudio.paInt16
 RATE = 44100
 SILENCE_THRESHOLD = 500
 SILENT_CHUNKS = 2 * RATE / CHUNK  # two seconds of silence marks the end of user voice input
-MIC_IDX = 0 # Set microphone id. Use tools/list_microphones.py to see a device list.
+# MIC_IDX = 0 # Replaced by --mic-device-index arg
 
 def compute_rms(data):
     # Assuming data is in 16-bit samples
@@ -36,9 +36,9 @@ def compute_rms(data):
     rms = (sum_squares / len(ints)) ** 0.5
     return rms
 
-def record_audio(num_channels):
+def record_audio(num_channels, device_idx):
     audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=num_channels, rate=RATE, input=True, input_device_index=MIC_IDX, frames_per_buffer=CHUNK)
+    stream = audio.open(format=FORMAT, channels=num_channels, rate=RATE, input=True, input_device_index=device_idx, frames_per_buffer=CHUNK)
 
     silent_chunks = 0
     audio_started = False
@@ -70,7 +70,7 @@ def record_audio(num_channels):
         wf.writeframes(b''.join(frames))
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
-    def __init__(self, pyttsx3_engine_instance=None): # Changed signature
+    def __init__(self, initial_tts_props=None):
         self.generated_text = ""
         self.lock = threading.Lock()
         self.speech_queue = queue.Queue()
@@ -78,9 +78,7 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         self.worker_thread.daemon = True
         self.worker_thread.start()
         self.tts_busy = False
-        self.tts_engine = pyttsx3_engine_instance # Changed variable
-        # self.p_audio = None # Explicitly removing this line if it exists after previous changes
-        # self.piper_voice = None # Explicitly removing this line
+        self.initial_tts_props = initial_tts_props
 
     def on_llm_new_token(self, token, **kwargs):
         # Append the token to the generated text
@@ -108,16 +106,28 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
                 self.tts_busy = False
 
     def text_to_speech(self, text):
-        if self.tts_engine:
-            try:
-                print(f"Synthesizing with pyttsx3: {text}")
-                self.tts_engine.say(text)
-                self.tts_engine.runAndWait()
-                print("pyttsx3 playback complete.")
-            except Exception as e:
-                print(f"Error during pyttsx3 synthesis or playback: {e}")
-        else:
-            print("pyttsx3 engine not initialized. Cannot speak.")
+        local_tts_engine = None
+        try:
+            # Initialize a new engine instance for each call
+            local_tts_engine = pyttsx3.init()
+            if self.initial_tts_props:
+                if self.initial_tts_props.get('voice'):
+                    local_tts_engine.setProperty('voice', self.initial_tts_props['voice'])
+                if self.initial_tts_props.get('rate'):
+                    local_tts_engine.setProperty('rate', self.initial_tts_props['rate'])
+            
+            print(f"Synthesizing with pyttsx3: {text}")
+            local_tts_engine.say(text)
+            local_tts_engine.runAndWait()
+            print("pyttsx3 playback complete.")
+            # No explicit stop needed for local_tts_engine, it will be garbage collected.
+            # However, some pyttsx3 drivers might have issues with rapid re-initialization.
+            # If issues persist, a single engine in process_queue with stop/start iterations might be needed.
+        except RuntimeError as r_err:
+            # Catching RuntimeError specifically for "run loop already started"
+            print(f"pyttsx3 runtime error in text_to_speech: {r_err}. This might indicate an issue with the TTS engine driver even with local instances.")
+        except Exception as e:
+            print(f"General error during pyttsx3 synthesis or playback in text_to_speech: {e}")
 
 
 if __name__ == '__main__':
@@ -153,10 +163,18 @@ if __name__ == '__main__':
         default=180, # Default rate
         help="Speech rate for TTS (words per minute)."
     )
+    parser.add_argument(
+        "--mic-device-index",
+        type=int,
+        default=0, 
+        help="Device index of the microphone to use for recording. Use tools/list_microphones.py to find the correct index."
+    )
     args = parser.parse_args()
     
     # Initialize pyttsx3 Engine
     tts_engine = None
+    initial_tts_props = {} # Default to empty dict
+
     try:
         tts_engine = pyttsx3.init()
 
@@ -170,10 +188,10 @@ if __name__ == '__main__':
                     print(f"  Name: {voice.name}")
                     print(f"  Lang: {voice.languages}")
                     print(f"  Gender: {voice.gender}")
-                    # voice.age might not be standard, using it as per prompt, but might be specific to some engines or a placeholder.
                     print(f"  Age/Rate property (voice.age): {voice.age}") 
                     print("-" * 20)
-                exit()  # Exit after listing voices
+                # Safe to exit, no resources needing explicit cleanup beyond OS handling for pyttsx3
+                exit() 
             
             selected_voice_id = None
             voices = tts_engine.getProperty('voices')
@@ -187,13 +205,22 @@ if __name__ == '__main__':
             else:
                 print(f"TTS voice name '{args.tts_voice_name}' not found. Using default system voice.")
         
-        if args.tts_rate:
-            tts_engine.setProperty('rate', args.tts_rate)
-            print(f"TTS rate set to: {args.tts_rate}")
+        # Always set rate, using default if not specified by user
+        tts_engine.setProperty('rate', args.tts_rate)
+        print(f"TTS rate set to: {args.tts_rate}")
+
+        # Store properties for the callback handler
+        initial_tts_props['voice'] = tts_engine.getProperty('voice')
+        initial_tts_props['rate'] = tts_engine.getProperty('rate')
 
     except Exception as e:
-        print(f"Error initializing pyttsx3: {e}. TTS might not work.")
-        tts_engine = None
+        print(f"Error initializing pyttsx3 or getting properties: {e}. TTS might not work or use system defaults.")
+        # tts_engine might be None or partially configured.
+        # initial_tts_props will use defaults or be empty if error before props could be read.
+        # If tts_engine is None here, initial_tts_props remains empty, callback will use pyttsx3 defaults.
+        if args.tts_rate and not initial_tts_props.get('rate'): # Ensure rate from args is respected if engine init failed late
+            initial_tts_props['rate'] = args.tts_rate
+
 
     if LANG == "CN":
         prompt_path = "prompts/example-cn.txt"
@@ -204,7 +231,7 @@ if __name__ == '__main__':
     prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
 
     # Create an instance of the VoiceOutputCallbackHandler
-    voice_output_handler = VoiceOutputCallbackHandler(pyttsx3_engine_instance=tts_engine)
+    voice_output_handler = VoiceOutputCallbackHandler(initial_tts_props=initial_tts_props)
 
     # Create a callback manager with the voice output handler
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
@@ -226,7 +253,7 @@ if __name__ == '__main__':
                 continue  # Skip to the next iteration if TTS is busy 
             try:
                 print("Listening...")
-                record_audio(args.channels)
+                record_audio(args.channels, args.mic_device_index)
                 print("Transcribing...")
                 time_ckpt = time.time()
                 user_input = whisper.transcribe("recordings/output.wav", path_or_hf_repo=args.whisper_model)["text"]
