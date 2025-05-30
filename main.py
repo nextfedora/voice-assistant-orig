@@ -70,84 +70,39 @@ def record_audio(num_channels, device_idx):
         wf.writeframes(b''.join(frames))
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
-    def __init__(self, pyttsx3_engine_instance=None):
+    def __init__(self, initial_tts_props=None):
         self.generated_text = ""
-        self.lock = threading.Lock() # For generated_text and speech_queue
-        self.speech_queue = queue.Queue()
-        self.worker_thread = threading.Thread(target=self.process_queue)
-        self.worker_thread.daemon = True
-        
-        self.tts_engine = pyttsx3_engine_instance
-        self.tts_loop_started = False
-        self.tts_utterance_finished_event = threading.Event()
-        self.current_utterance_name = "u_tts" # Static name for utterances
-
-        if self.tts_engine:
-            try:
-                self.tts_engine.connect('finished-utterance', self._on_tts_finish)
-                self.tts_engine.startLoop(False) # Prepare for external event iteration
-                self.tts_loop_started = True
-                print("pyttsx3 event loop started (external management) and 'finished-utterance' callback connected.")
-            except Exception as e:
-                print(f"Error starting pyttsx3 external loop or connecting callback: {e}. TTS will be non-functional.")
-                self.tts_engine = None # Cannot use if loop or callback setup failed
-        
-        self.worker_thread.start() # Start worker thread after engine is potentially set up
-        self.tts_busy = False
-
-    def _on_tts_finish(self, name, completed):
-        # print(f"TTS event: name='{name}', completed={completed}, expected='{self.current_utterance_name}'") # Debugging
-        if name == self.current_utterance_name:
-            self.tts_utterance_finished_event.set()
-        # else:
-            # This might indicate an issue if events from other sources or old utterances arrive
-            # print(f"TTS event for unexpected utterance name: {name}. Current expected: {self.current_utterance_name}")
+        self.lock = threading.Lock() # Only for self.generated_text
+        self.initial_tts_props = initial_tts_props if initial_tts_props else {}
+        # All queue, worker_thread, tts_busy, tts_engine instance, event, startLoop logic removed.
 
     def on_llm_new_token(self, token, **kwargs):
-        # Append the token to the generated text
         with self.lock:
             self.generated_text += token
+    
+    # process_queue and _on_tts_finish methods are removed.
 
-        # Check if the token is the end of a sentence
-        if token in ['.', '。', '!', '！', '?', '？']:
-            with self.lock:
-                # Put the complete sentence in the queue
-                self.speech_queue.put(self.generated_text)
-                self.generated_text = ""
+    def text_to_speech(self, full_text_to_speak):
+        if not full_text_to_speak:
+            print("No text provided to speak.")
+            return
 
-    def process_queue(self):
-        while True:
-            # Wait for the next sentence
-            text = self.speech_queue.get()
-            if text is None:
-                self.tts_busy = False
-                continue
-            self.tts_busy = True
-            self.text_to_speech(text) # This will now block via the iterate loop in text_to_speech
-            self.speech_queue.task_done()
-            if self.speech_queue.empty():
-                self.tts_busy = False
-
-    def text_to_speech(self, text):
-        if self.tts_engine and self.tts_loop_started:
-            try:
-                self.tts_utterance_finished_event.clear()
-                print(f"Queuing with pyttsx3 (event callback): {text}")
-                self.tts_engine.say(text, self.current_utterance_name)
-                
-                # print(f"Starting pyttsx3 iteration for '{self.current_utterance_name}'...") # Debugging
-                while not self.tts_utterance_finished_event.is_set():
-                    self.tts_engine.iterate()
-                    time.sleep(0.01) # Prevent tight loop, yield CPU
-                # print(f"pyttsx3 utterance '{self.current_utterance_name}' finished processing (event received).") # Debugging
-            except Exception as e:
-                print(f"Error during pyttsx3 synthesis or iteration (event callback): {e}")
-                # Ensure event is set in case of error to prevent deadlocks
-                self.tts_utterance_finished_event.set() 
-        elif not self.tts_engine:
-            print("pyttsx3 engine not initialized in handler. Cannot speak.")
-        elif not self.tts_loop_started:
-            print("pyttsx3 external loop not started in handler. Cannot speak.")
+        local_tts_engine = None
+        try:
+            # print(f"TTS attempting to speak full response (approx {len(full_text_to_speak)} chars).") # Optional: for debugging length
+            local_tts_engine = pyttsx3.init()
+            if self.initial_tts_props:
+                if self.initial_tts_props.get('voice'):
+                    local_tts_engine.setProperty('voice', self.initial_tts_props['voice'])
+                if self.initial_tts_props.get('rate'):
+                    local_tts_engine.setProperty('rate', self.initial_tts_props['rate'])
+            
+            local_tts_engine.say(full_text_to_speak)
+            local_tts_engine.runAndWait()
+            print("pyttsx3 playback of full response complete.")
+        except Exception as e:
+            print(f"Error during pyttsx3 synthesis of full response: {e}")
+        # local_tts_engine will be garbage collected.
 
 
 if __name__ == '__main__':
@@ -191,46 +146,51 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     
-    # Initialize pyttsx3 Engine
-    tts_engine = None
+    # Initialize pyttsx3 Engine for property gathering
+    tts_engine_for_props = None
+    initial_tts_props = {} 
     try:
-        tts_engine = pyttsx3.init()
-
+        tts_engine_for_props = pyttsx3.init()
+        if args.tts_voice_name and args.tts_voice_name.lower() == 'list':
+            voices = tts_engine_for_props.getProperty('voices')
+            print("Available TTS voices:")
+            for i, voice in enumerate(voices):
+                print(f"Voice {i}:")
+                print(f"  ID: {voice.id}")
+                print(f"  Name: {voice.name}")
+                print(f"  Lang: {voice.languages}")
+                print(f"  Gender: {voice.gender}")
+                print(f"  Age/Rate property (voice.age): {voice.age}") 
+                print("-" * 20)
+            exit()
+        
+        # Determine voice ID to use
         if args.tts_voice_name:
-            if args.tts_voice_name.lower() == 'list':
-                voices = tts_engine.getProperty('voices')
-                print("Available TTS voices:")
-                for i, voice in enumerate(voices):
-                    print(f"Voice {i}:")
-                    print(f"  ID: {voice.id}")
-                    print(f"  Name: {voice.name}")
-                    print(f"  Lang: {voice.languages}")
-                    print(f"  Gender: {voice.gender}")
-                    print(f"  Age/Rate property (voice.age): {voice.age}") 
-                    print("-" * 20)
-                # No need to call tts_engine.stop() or similar before exit for list voices
-                exit() 
-            
             selected_voice_id = None
-            voices = tts_engine.getProperty('voices')
+            voices = tts_engine_for_props.getProperty('voices')
             for voice in voices:
                 if voice.name and args.tts_voice_name.lower() == voice.name.lower():
                     selected_voice_id = voice.id
                     break
             if selected_voice_id:
-                tts_engine.setProperty('voice', selected_voice_id)
-                print(f"TTS voice set to: {args.tts_voice_name}")
+                initial_tts_props['voice'] = selected_voice_id
+                print(f"TTS voice for use: {args.tts_voice_name} (ID: {selected_voice_id})")
             else:
-                print(f"TTS voice name '{args.tts_voice_name}' not found. Using default system voice.")
-        
-        # Always set rate, using default if not specified by user
-        tts_engine.setProperty('rate', args.tts_rate)
-        print(f"TTS rate set to: {args.tts_rate}")
+                print(f"TTS voice name '{args.tts_voice_name}' not found. Using default system voice ID.")
+                initial_tts_props['voice'] = tts_engine_for_props.getProperty('voice') # Store default ID
+        else:
+            initial_tts_props['voice'] = tts_engine_for_props.getProperty('voice') # Store default ID if no name given
+
+        initial_tts_props['rate'] = args.tts_rate 
+        print(f"TTS rate for use: {args.tts_rate}")
+        # tts_engine_for_props is temporary and can be garbage collected.
 
     except Exception as e:
-        print(f"Error initializing pyttsx3: {e}. TTS might not be functional.")
-        tts_engine = None # Ensure tts_engine is None if setup failed
-
+        print(f"Error initializing pyttsx3 for property gathering: {e}. Default voice/rate may be used by handler.")
+        if not initial_tts_props.get('rate'): 
+           initial_tts_props['rate'] = args.tts_rate # Default from argparse if engine failed early
+        # initial_tts_props['voice'] will be None if engine failed, handler's local engine will use system default.
+     
 
     if LANG == "CN":
         prompt_path = "prompts/example-cn.txt"
@@ -241,8 +201,7 @@ if __name__ == '__main__':
     prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
 
     # Create an instance of the VoiceOutputCallbackHandler
-    # Pass the initialized and configured tts_engine
-    voice_output_handler = VoiceOutputCallbackHandler(pyttsx3_engine_instance=tts_engine)
+    voice_output_handler = VoiceOutputCallbackHandler(initial_tts_props=initial_tts_props)
 
     # Create a callback manager with the voice output handler
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
@@ -260,8 +219,7 @@ if __name__ == '__main__':
     dialogue = ""
     try:
         while True:
-            if voice_output_handler.tts_busy:  # Check if TTS is busy
-                continue  # Skip to the next iteration if TTS is busy 
+            # tts_busy flag is removed, main loop no longer needs to check it.
             try:
                 print("Listening...")
                 record_audio(args.channels, args.mic_device_index)
@@ -273,26 +231,37 @@ if __name__ == '__main__':
             except subprocess.CalledProcessError:
                 print("voice recognition failed, please try again")
                 continue
+            
             time_ckpt = time.time()
             print("Generating...")
-            dialogue += "*Q* {}\n".format(user_input)
-            prompt = prompt_template.format(dialogue=dialogue)
-            reply = llm(prompt, max_tokens=4096)
-            if reply is not None:
-                voice_output_handler.speech_queue.put(None)
-                dialogue += "*A* {}\n".format(reply)
-                print("%s: %s (Time %d ms)" % ("Server", reply.strip(), (time.time() - time_ckpt) * 1000))
+            # Clear previous full response from handler before new LLM call
+            with voice_output_handler.lock:
+                voice_output_handler.generated_text = ""
+
+            prompt = prompt_template.format(dialogue=dialogue + "*Q* {}\n".format(user_input)) # Add current Q to prompt
+            reply = llm(prompt, max_tokens=4096) # LLM call
+
+            if reply is not None: 
+                # The 'generated_text' in handler has been accumulating this 'reply' via on_llm_new_token.
+                # We use the text from the handler as the single source of truth for what was generated.
+                full_response_text = ""
+                with voice_output_handler.lock: # Access generated_text safely
+                    full_response_text = voice_output_handler.generated_text
+                    # voice_output_handler.generated_text = "" # Reset for next turn is done before LLM call now
+                
+                dialogue += "*Q* {}\n*A* {}\n".format(user_input, full_response_text) # Add Q&A to dialogue history
+                print("%s: %s (Time %d ms)" % ("Server", full_response_text.strip(), (time.time() - time_ckpt) * 1000))
+                
+                if full_response_text.strip(): # Only speak if there's text
+                    voice_output_handler.text_to_speech(full_response_text.strip()) 
+            else: # Handle case where LLM returns None (e.g. error or empty response)
+                dialogue += "*Q* {}\n*A* \n".format(user_input) # Log Q with empty A
+                print("%s: %s (Time %d ms)" % ("Server", "[No reply from LLM]", (time.time() - time_ckpt) * 1000))
+
     except KeyboardInterrupt:
         print("\nExiting due to KeyboardInterrupt...")
     finally:
-        if 'voice_output_handler' in locals() and hasattr(voice_output_handler, 'tts_engine') and \
-           voice_output_handler.tts_engine is not None and \
-           hasattr(voice_output_handler, 'tts_loop_started') and voice_output_handler.tts_loop_started:
-            try:
-                print("Stopping pyttsx3 event loop.")
-                voice_output_handler.tts_engine.endLoop()
-            except Exception as e:
-                print(f"Error stopping pyttsx3 event loop: {e}")
-        
-        # PyAudio for input is managed within record_audio()
+        # No tts_engine.endLoop() needed as the handler uses local, short-lived engines.
+        # The tts_engine_for_props is also short-lived and doesn't run a loop.
+        # PyAudio for input is managed within record_audio().
         print("Script finished.")
