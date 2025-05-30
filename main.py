@@ -5,9 +5,14 @@ import queue
 import struct
 import threading
 import subprocess
+import io
 
 import pyaudio
 import whisper
+import soundfile as sf
+# Attempt to import PiperVoice, hoping the actual library uses this name or similar
+# If this fails at runtime, the user will need to install piper_tts and check its API
+from piper_tts.piper_voice import PiperVoice 
 
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import LlamaCpp
@@ -69,7 +74,7 @@ def record_audio(num_channels):
         wf.writeframes(b''.join(frames))
 
 class VoiceOutputCallbackHandler(BaseCallbackHandler):
-    def __init__(self):
+    def __init__(self, piper_voice_instance=None, pyaudio_instance=None):
         self.generated_text = ""
         self.lock = threading.Lock()
         self.speech_queue = queue.Queue()
@@ -77,6 +82,8 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
         self.worker_thread.daemon = True
         self.worker_thread.start()
         self.tts_busy = False
+        self.piper_voice = piper_voice_instance
+        self.p_audio = pyaudio_instance
 
     def on_llm_new_token(self, token, **kwargs):
         # Append the token to the generated text
@@ -104,13 +111,47 @@ class VoiceOutputCallbackHandler(BaseCallbackHandler):
                 self.tts_busy = False
 
     def text_to_speech(self, text):
+        if self.piper_voice and self.p_audio:
+            try:
+                print(f"Synthesizing with Piper: {text}")
+                # Assumed API for Piper TTS synthesis. The actual method might differ.
+                # It's expected to return WAV audio bytes.
+                wav_bytes = self.piper_voice.synthesize(text) 
+
+                if wav_bytes:
+                    # Use soundfile to get properties from WAV bytes for PyAudio
+                    data, samplerate = sf.read(io.BytesIO(wav_bytes))
+                    
+                    # Open PyAudio stream for playback
+                    # Piper models are typically mono, soundfile usually returns float32
+                    stream = self.p_audio.open(format=pyaudio.paFloat32, 
+                                               channels=1, 
+                                               rate=samplerate,
+                                               output=True)
+                    # Play audio
+                    stream.write(data.astype('float32').tobytes()) # Ensure data is in bytes
+                    stream.stop_stream()
+                    stream.close()
+                    print("Piper TTS playback complete.")
+                else:
+                    print("Piper TTS synthesis returned no data. Falling back.")
+                    self.fallback_tts(text) # Fallback if Piper returns no data
+            except Exception as e:
+                print(f"Error during Piper TTS synthesis or playback: {e}. Falling back.")
+                self.fallback_tts(text) # Fallback on any Piper error
+        else:
+            # Fallback if Piper or PyAudio not initialized
+            self.fallback_tts(text)
+
+    def fallback_tts(self, text):
+        print(f"Falling back to OS 'say' command for: {text}")
         try:
             if LANG == "CN":
                 subprocess.call(["say", "-r", "200", "-v", "TingTing", text])
             else:
                 subprocess.call(["say", "-r", "180", "-v", "Karen", text])
         except Exception as e:
-            print(f"Error in text-to-speech: {e}")
+            print(f"Error in fallback text-to-speech: {e}")
 
 
 if __name__ == '__main__':
@@ -133,7 +174,42 @@ if __name__ == '__main__':
         default=1,
         help="Number of audio channels for recording."
     )
+    parser.add_argument(
+        "--tts-model",
+        type=str,
+        default="en_US-lessac-medium",
+        help="Piper TTS voice model name (e.g., en_US-lessac-medium) or path to .onnx file. If a name, it will try to download. See Piper docs for voice names."
+    )
+    parser.add_argument(
+        "--tts-config",
+        type=str,
+        default=None,
+        help="Path to Piper TTS .onnx.json config file. If --tts-model is a name, this can often be inferred."
+    )
+    parser.add_argument(
+        "--tts-data-dir",
+        type=str,
+        default="./piper_models",
+        help="Directory to find/download Piper voice models."
+    )
     args = parser.parse_args()
+
+    # Initialize Piper TTS Voice
+    piper_voice = None
+    try:
+        print(f"Initializing Piper TTS with model: {args.tts_model}, config: {args.tts_config}, data directory: {args.tts_data_dir}")
+        # This instantiation assumes piper-tts can handle a model name for download,
+        # or direct paths if tts_model is a path to .onnx and tts_config is its .json.
+        # The actual API might require specific handling for names vs paths.
+        piper_voice = PiperVoice(model_name_or_path=args.tts_model, config_path=args.tts_config, data_folder=args.tts_data_dir)
+        print("Piper TTS initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing Piper TTS: {e}. Ensure 'piper-tts' is installed and models are accessible.")
+        print("TTS will fall back to OS 'say' command if available, or fail if 'say' is not available.")
+        piper_voice = None # Ensure it's None if init fails
+
+    # Initialize PyAudio instance for playback
+    p_audio_out = pyaudio.PyAudio()
 
     if LANG == "CN":
         prompt_path = "prompts/example-cn.txt"
@@ -144,7 +220,7 @@ if __name__ == '__main__':
     prompt_template = PromptTemplate(template=template, input_variables=["dialogue"])
 
     # Create an instance of the VoiceOutputCallbackHandler
-    voice_output_handler = VoiceOutputCallbackHandler()
+    voice_output_handler = VoiceOutputCallbackHandler(piper_voice_instance=piper_voice, pyaudio_instance=p_audio_out)
 
     # Create a callback manager with the voice output handler
     callback_manager = BaseCallbackManager(handlers=[voice_output_handler])
@@ -185,4 +261,10 @@ if __name__ == '__main__':
                 dialogue += "*A* {}\n".format(reply)
                 print("%s: %s (Time %d ms)" % ("Server", reply.strip(), (time.time() - time_ckpt) * 1000))
     except KeyboardInterrupt:
-        pass
+        print("\nExiting due to KeyboardInterrupt...")
+    finally:
+        if 'p_audio_out' in locals() and p_audio_out is not None:
+            print("Terminating PyAudio for output.")
+            p_audio_out.terminate()
+        # Terminate the input PyAudio instance used in record_audio if it were managed globally
+        # However, record_audio() creates and terminates its own PyAudio instance locally, so no global one to clean up here for input.

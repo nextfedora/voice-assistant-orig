@@ -54,6 +54,12 @@ The model files are stored in the `models/` folder. The paths to the models can 
   - The [version for MLX](https://huggingface.co/mlx-community/whisper-large-v3-mlx) from `mlx-community` can be directly downloaded.
   - For a smaller footprint, you can use models like [mlx-community/whisper-tiny-mlx](https://huggingface.co/mlx-community/whisper-tiny-mlx).
 
+- **TTS Model (Piper TTS)**: The script now uses [Piper TTS](https://github.com/rhasspy/piper) for text-to-speech output, falling back to the OS 'say' command if Piper fails or is not configured. Piper voices are generally higher quality and more consistent.
+  - `--tts-model`: Specifies the Piper TTS voice. This can be a model name (e.g., `en_US-lessac-medium`) which will be auto-downloaded if not found in `tts-data-dir`, or a direct path to an `.onnx` voice file. A good list of available voices can be found on the [Rhasspy Piper Voices Hugging Face page](https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0). The `en_US-lessac-medium` voice is a good starting point for English.
+  - `--tts-config`: Optional path to the `.onnx.json` config file for the Piper voice. This is often inferred if `--tts-model` is a path to an `.onnx` file (by looking for a `.json` file with the same name) or if using an auto-downloaded model name.
+  - `--tts-data-dir`: Directory where Piper TTS voice models are stored or will be downloaded (default: `./piper_models`).
+  - *Note on Voice Quality*: Different Piper voices have varying characteristics, file sizes, and processing requirements. Experiment to find one that best suits your needs for quality and performance.
+
 ### Running with Specific Models
 
 You can specify which models to use when running the script from the command line.
@@ -89,6 +95,19 @@ You can specify which models to use when running the script from the command lin
   python main.py --channels 2
   ```
   If you encounter an `OSError: [Errno -9998] Invalid number of channels`, see the Troubleshooting section.
+
+- **Using a specific Piper TTS voice (auto-download):**
+  To use a specific Piper TTS voice (e.g., `en_US-lessac-medium`), it will be downloaded to `--tts-data-dir` if not already present.
+  ```bash
+  python main.py --tts-model en_US-lessac-medium
+  ```
+
+- **Using local Piper TTS model files:**
+  If you have downloaded Piper model files (`.onnx` and `.onnx.json`) manually:
+  ```bash
+  python main.py --tts-model /path/to/your/voice.onnx --tts-config /path/to/your/voice.onnx.json
+  ```
+  You can also place them in the default `--tts-data-dir` (e.g. `./piper_models/en_US-lessac-medium/en_US-lessac-medium.onnx`) and then use the model name.
 
 #### Original Model Files Acknowledgement
 
